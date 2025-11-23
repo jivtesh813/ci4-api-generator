@@ -1,0 +1,32 @@
+{
+    "name": "jivtesh/ci4-api-generator",
+    "description": "Automatic API generator for CodeIgniter 4 based on MySQL tables.",
+    "type": "library",
+    "homepage": "https://github.com/jivtesh813/ci4-api-generator",
+    "license": "BSD-3-Clause",
+    "authors": [
+        {
+            "name": "Jivtesh Ghatora",
+            "email": "jivtesh813@outlook.com"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "JivteshGhatora\\Ci4ApiGenerator\\": "src/"
+        }
+    },
+    "extra": {
+        "codeigniter4": {
+            "discover": true,
+            "commands": [
+                "JivteshGhatora\\Ci4ApiGenerator\\Commands\\GenerateApis",
+                "JivteshGhatora\\Ci4ApiGenerator\\Commands\\RefreshApis",
+                "JivteshGhatora\\Ci4ApiGenerator\\Commands\\ListApis"
+            ]
+        }
+    },
+    "require": {
+        "php": ">=8.1",
+        "codeigniter4/framework": "^4"
+    }
+}
