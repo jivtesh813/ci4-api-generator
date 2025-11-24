@@ -10,6 +10,7 @@ Automatically generate RESTful APIs for your CodeIgniter 4 application based on 
 
 - **Instant API Generation**: APIs work immediately after installation - no additional setup required
 - **Full CRUD Operations**: Automatic GET, POST, PUT, DELETE endpoints for all tables
+- **Composite Primary Key Support**: Automatically handles tables with single or multiple primary keys
 - **Smart Validation**: Auto-generates validation rules from database schema
 - **OpenAPI/Swagger Documentation**: Beautiful interactive API documentation with Scalar UI
 - **Pagination Support**: Built-in pagination for listing endpoints
@@ -91,6 +92,7 @@ php spark api:list
 ```bash
 php spark api:generate --openapi
 ```
+This generates the file openapi.json in writable-->api-docs folderm which is used by Scalar in View file to create api documentation.
 
 Then visit `http://yoursite.com/api/v1/docs` to see your interactive API documentation.
 
@@ -102,11 +104,17 @@ For each table in your database, the following endpoints are automatically creat
 |--------|----------|-------------|---------|
 | GET | `/api/v1/{table}` | List all records (paginated) | `/api/v1/users` |
 | GET | `/api/v1/{table}/{id}` | Get a single record | `/api/v1/users/1` |
+| GET | `/api/v1/{table}/{id1}/{id2}` | Get a single record (composite key) | `/api/v1/payments/103/HQ336336` |
 | POST | `/api/v1/{table}` | Create a new record | `/api/v1/users` |
 | PUT | `/api/v1/{table}/{id}` | Update a record | `/api/v1/users/1` |
+| PUT | `/api/v1/{table}/{id1}/{id2}` | Update a record (composite key) | `/api/v1/payments/103/HQ336336` |
 | DELETE | `/api/v1/{table}/{id}` | Delete a record | `/api/v1/users/1` |
+| DELETE | `/api/v1/{table}/{id1}/{id2}` | Delete a record (composite key) | `/api/v1/payments/103/HQ336336` |
 
-**Note**: Table names with underscores are converted to hyphens in URLs (e.g., `user_profiles` → `/api/v1/user-profiles`)
+**Notes**: 
+- Table names with underscores are converted to hyphens in URLs (e.g., `user_profiles` → `/api/v1/user-profiles`)
+- The package automatically detects composite primary keys and generates appropriate routes
+- For composite keys, provide all key values in order as defined in the database
 
 ## 🔧 Configuration (Optional)
 
@@ -343,6 +351,8 @@ GET /api/v1/users?status=active&role=admin
 
 ### Get Single Record (GET)
 
+#### Single Primary Key
+
 ```bash
 GET /api/v1/users/1
 ```
@@ -359,6 +369,29 @@ GET /api/v1/users/1
   }
 }
 ```
+
+#### Composite Primary Key
+
+For tables with composite primary keys (e.g., `payments` table with `customerNumber` and `checkNumber`):
+
+```bash
+GET /api/v1/payments/103/HQ336336
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "data": {
+    "customerNumber": "103",
+    "checkNumber": "HQ336336",
+    "paymentDate": "2004-10-19",
+    "amount": "6066.78"
+  }
+}
+```
+
+**Note**: The order of primary key values in the URL must match the order defined in the database schema.
 
 ### Create Record (POST)
 
@@ -384,6 +417,8 @@ Content-Type: application/json
 
 ### Update Record (PUT)
 
+#### Single Primary Key
+
 ```bash
 PUT /api/v1/users/1
 Content-Type: application/json
@@ -402,10 +437,46 @@ Content-Type: application/json
 }
 ```
 
+#### Composite Primary Key
+
+```bash
+PUT /api/v1/payments/103/HQ336336
+Content-Type: application/json
+
+{
+  "paymentDate": "2004-10-20",
+  "amount": "7000.00"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Record updated successfully"
+}
+```
+
 ### Delete Record (DELETE)
+
+#### Single Primary Key
 
 ```bash
 DELETE /api/v1/users/1
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Record deleted successfully"
+}
+```
+
+#### Composite Primary Key
+
+```bash
+DELETE /api/v1/payments/103/HQ336336
 ```
 
 **Response**:

@@ -4,12 +4,13 @@ namespace JivteshGhatora\Ci4ApiGenerator\Controllers;
 
 use CodeIgniter\RESTful\ResourceController;
 use JivteshGhatora\Ci4ApiGenerator\Models\ApiModel;
+use JivteshGhatora\Ci4ApiGenerator\Libraries\DatabaseReader;
 
 class ApiController extends ResourceController
 {
     protected $format = 'json';
     protected $table;
-    protected $primaryKey = 'id';
+    protected $primaryKey;
     protected $modelName = ApiModel::class;
     protected $config;
 
@@ -50,7 +51,8 @@ class ApiController extends ResourceController
             $validColumns = $this->config->enabledColumnsToShow[$this->table];
         } else {
             // Get all columns from the table if not restricted
-            $validColumns = $model->getTableColumns();
+            $databaseReader = new DatabaseReader();
+            $validColumns = $databaseReader->getTableColumns($this->table);
         }
 
         // Only apply filters for valid columns
@@ -96,13 +98,14 @@ class ApiController extends ResourceController
     }
 
     /**
-     * GET /api/v1/table/:id
-     * @param int $id - Record ID
-     * @param string $table - Table name passed as route segment
+     * GET /api/v1/table/:id (or multiple IDs for composite keys)
+     * Accepts variable number of arguments for composite primary keys
+     * @param mixed ...$args - Variable arguments: primary key value(s) followed by table name
      */
-    public function show($id = null, $table = null)
+    public function show(...$args)
     {
-        $this->table = $table;
+        // Last argument is always the table name
+        $this->table = array_pop($args);
         
         if (!$this->table) {
             return $this->fail('Table name is required');
@@ -114,10 +117,19 @@ class ApiController extends ResourceController
 
         $model = new ApiModel();
         $model->setTable($this->table);
-        $model->setPrimaryKey($this->primaryKey);
+        $primaryKeys = $model->getPrimaryKey();
+        
+        if (!$primaryKeys || count($args) !== count($primaryKeys)) {
+            return $this->fail('Invalid primary key parameters');
+        }
 
         if(isset($this->config->enabledColumnsToShow) && isset($this->config->enabledColumnsToShow[$this->table])) {
             $model->select($this->config->enabledColumnsToShow[$this->table]);
+        }
+
+        // Build where clause for composite or single primary key
+        foreach ($primaryKeys as $index => $keyColumn) {
+            $model->where($keyColumn, $args[$index]);
         }
 
         if(isset($this->config->multiTenantColumns) && is_array($this->config->multiTenantColumns)) {
@@ -135,7 +147,7 @@ class ApiController extends ResourceController
             }
         }
 
-        $data = $model->find($id);
+        $data = $model->first();
 
         if (!$data) {
             return $this->failNotFound('Record not found');
@@ -197,13 +209,14 @@ class ApiController extends ResourceController
     }
 
     /**
-     * PUT /api/v1/table/:id
-     * @param int $id - Record ID
-     * @param string $table - Table name passed as route segment
+     * PUT /api/v1/table/:id (or multiple IDs for composite keys)
+     * Accepts variable number of arguments for composite primary keys
+     * @param mixed ...$args - Variable arguments: primary key value(s) followed by table name
      */
-    public function update($id = null, $table = null)
+    public function update(...$args)
     {
-        $this->table = $table;
+        // Last argument is always the table name
+        $this->table = array_pop($args);
         
         if (!$this->table) {
             return $this->fail('Table name is required');
@@ -215,7 +228,11 @@ class ApiController extends ResourceController
 
         $model = new ApiModel();
         $model->setTable($this->table);
-        $model->setPrimaryKey($this->primaryKey);
+        $primaryKeys = $model->getPrimaryKey();
+        
+        if (!$primaryKeys || count($args) !== count($primaryKeys)) {
+            return $this->fail('Invalid primary key parameters');
+        }
 
         $data = $this->request->getJSON(true);
         
@@ -238,7 +255,12 @@ class ApiController extends ResourceController
         }
 
         try {
-            if ($model->update($id, $data)) {
+            // Build where clause for composite or single primary key
+            foreach ($primaryKeys as $index => $keyColumn) {
+                $model->where($keyColumn, $args[$index]);
+            }
+            
+            if ($model->set($data)->update()) {
                 return $this->respond([
                     'status' => 'success',
                     'message' => 'Record updated successfully'
@@ -252,13 +274,14 @@ class ApiController extends ResourceController
     }
 
     /**
-     * DELETE /api/v1/table/:id
-     * @param int $id - Record ID
-     * @param string $table - Table name passed as route segment
+     * DELETE /api/v1/table/:id (or multiple IDs for composite keys)
+     * Accepts variable number of arguments for composite primary keys
+     * @param mixed ...$args - Variable arguments: primary key value(s) followed by table name
      */
-    public function delete($id = null, $table = null)
+    public function delete(...$args)
     {
-        $this->table = $table;
+        // Last argument is always the table name
+        $this->table = array_pop($args);
         
         if (!$this->table) {
             return $this->fail('Table name is required');
@@ -270,9 +293,18 @@ class ApiController extends ResourceController
 
         $model = new ApiModel();
         $model->setTable($this->table);
-        $model->setPrimaryKey($this->primaryKey);
+        $primaryKeys = $model->getPrimaryKey();
+        
+        if (!$primaryKeys || count($args) !== count($primaryKeys)) {
+            return $this->fail('Invalid primary key parameters');
+        }
 
-        if ($model->delete($id)) {
+        // Build where clause for composite or single primary key
+        foreach ($primaryKeys as $index => $keyColumn) {
+            $model->where($keyColumn, $args[$index]);
+        }
+
+        if ($model->delete()) {
             return $this->respondDeleted([
                 'status' => 'success',
                 'message' => 'Record deleted successfully'

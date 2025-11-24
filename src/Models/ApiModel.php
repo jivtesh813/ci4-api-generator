@@ -157,4 +157,34 @@ class ApiModel extends Model
     {
         return $this->db->getFieldData($this->table);
     }
+
+    /**
+     * Get the primary key(s) of a given table
+     * 
+     * @param string|null $table Table name (uses current table if not provided)
+     * @return array|null Array of primary key column names or null if not found
+     */
+    public function getPrimaryKey(?string $table = null): ?array
+    {
+        $tableName = $table ?? $this->table;
+        
+        if (empty($tableName)) {
+            return null;
+        }
+        
+        // Get table indexes - handles both single and composite primary keys
+        $query = $this->db->query("SHOW KEYS FROM `{$tableName}` WHERE Key_name = 'PRIMARY'");
+        $results = $query->getResult();
+        
+        if (empty($results)) {
+            return null;
+        }
+        
+        // Extract column names (ordered by Seq_in_index for composite keys)
+        $primaryKeys = array_map(function($row) {
+            return $row->Column_name;
+        }, $results);
+        
+        return $primaryKeys;
+    }
 }

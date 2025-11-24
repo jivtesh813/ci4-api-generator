@@ -103,13 +103,36 @@ class DocumentationGenerator
         foreach ($this->routes as $route => $handler) {
             $parts = explode(' ', $route, 2);
             $method = strtolower($parts[0]);
-            $rawPath = str_replace('(:num)', '{id}', $parts[1]);
+            
+            // Extract table from new route format first
+            $table = $this->extractTableFromHandler($handler);
+            
+            // Get actual primary key column names for this table
+            $primaryKeys = [];
+            if (isset($this->tableInfo[$table]['columns'])) {
+                foreach ($this->tableInfo[$table]['columns'] as $column) {
+                    if ($column['primary_key']) {
+                        $primaryKeys[] = $column['name'];
+                    }
+                }
+            }
+            
+            // Replace (:segment) with actual primary key column names
+            $rawPath = $parts[1];
+            $keyIndex = 0;
+            $rawPath = preg_replace_callback('/\(:segment\)/', function($matches) use (&$keyIndex, $primaryKeys) {
+                $keyName = isset($primaryKeys[$keyIndex]) ? $primaryKeys[$keyIndex] : ('id' . ($keyIndex + 1));
+                $keyIndex++;
+                return '{' . $keyName . '}';
+            }, $rawPath);
+            
+            // Also handle old (:num) pattern for backward compatibility
+            $rawPath = preg_replace_callback('/\(:num\)/', function($matches) use ($primaryKeys) {
+                return '{' . (isset($primaryKeys[0]) ? $primaryKeys[0] : 'id') . '}';
+            }, $rawPath);
             
             // Clean the path - remove API prefix since it's in server URL
             $path = $this->cleanPath($rawPath);
-            
-            // Extract table from new route format
-            $table = $this->extractTableFromHandler($handler);
 
             if (!isset($openapi['paths'][$path])) {
                 $openapi['paths'][$path] = [];
@@ -152,16 +175,29 @@ class DocumentationGenerator
             ]
         ];
 
-        // Add parameters for routes with {id}
-        if (strpos($path, '{id}') !== false) {
-            $operation['parameters'] = [
-                [
-                    'name' => 'id',
+        // Add parameters for routes with path parameters (primary keys)
+        $parameters = [];
+        
+        // Extract all parameters from path (anything in curly braces)
+        if (preg_match_all('/\{([^}]+)\}/', $path, $matches)) {
+            $paramCount = count($matches[1]);
+            foreach ($matches[1] as $index => $paramName) {
+                $description = $paramCount > 1 
+                    ? "Primary key part: {$paramName}" 
+                    : "Primary key: {$paramName}";
+                    
+                $parameters[] = [
+                    'name' => $paramName,
                     'in' => 'path',
                     'required' => true,
-                    'schema' => ['type' => 'integer']
-                ]
-            ];
+                    'schema' => ['type' => 'string'],
+                    'description' => $description
+                ];
+            }
+        }
+        
+        if (!empty($parameters)) {
+            $operation['parameters'] = $parameters;
         }
 
         // Add request body for POST/PUT/PATCH
@@ -267,12 +303,27 @@ class DocumentationGenerator
      */
     private function getOperationSummary(string $method, string $table, string $path): string
     {
+        // Check if path has parameters (single or composite key)
+        $paramMatches = [];
+        preg_match_all('/\{([^}]+)\}/', $path, $paramMatches);
+        $hasParams = !empty($paramMatches[1]);
+        $paramCount = count($paramMatches[1]);
+        
+        $paramDesc = '';
+        if ($hasParams) {
+            if ($paramCount > 1) {
+                $paramDesc = ' by ' . implode(', ', $paramMatches[1]);
+            } else {
+                $paramDesc = ' by ' . $paramMatches[1][0];
+            }
+        }
+        
         $summaries = [
-            'get' => 'Retrieve ' . $this->formatTableName($table) . (strpos($path, '{id}') !== false ? ' by ID' : ''),
+            'get' => 'Retrieve ' . $this->formatTableName($table) . $paramDesc,
             'post' => 'Create new ' . $this->formatTableName($table),
-            'put' => 'Update ' . $this->formatTableName($table),
-            'patch' => 'Partially update ' . $this->formatTableName($table),
-            'delete' => 'Delete ' . $this->formatTableName($table)
+            'put' => 'Update ' . $this->formatTableName($table) . $paramDesc,
+            'patch' => 'Partially update ' . $this->formatTableName($table) . $paramDesc,
+            'delete' => 'Delete ' . $this->formatTableName($table) . $paramDesc
         ];
         
         return $summaries[$method] ?? 'Operation on ' . $this->formatTableName($table);
