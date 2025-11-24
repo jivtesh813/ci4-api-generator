@@ -52,7 +52,11 @@ class ApiController extends ResourceController
         } else {
             // Get all columns from the table if not restricted
             $databaseReader = new DatabaseReader();
-            $validColumns = $databaseReader->getTableColumns($this->table);
+            $columnData = $databaseReader->getTableColumns($this->table);
+            // Extract just the column names from the array of column objects
+            $validColumns = array_map(function($col) {
+                return is_array($col) ? $col['name'] : $col;
+            }, $columnData);
         }
 
         // Only apply filters for valid columns
