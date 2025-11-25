@@ -29,10 +29,8 @@ class DatabaseReader
             $tables = array_intersect($tables, $this->config->tables);
         }
         
-        // Exclude tables from config
-        $tables = array_diff($tables, $this->config->excludeTables);
-        
-        return array_values($tables);
+	// Exclude tables from config
+        return array_values(array_diff($tables, $this->config->excludeTables));
     }
 
     /**
@@ -58,14 +56,13 @@ class DatabaseReader
                 'default' => $field->default
             ];
         }
-        //If $enabledColumnsToShow is set in config, filter columns
-        $enabledColumnsToShow = $this->config->enabledColumnsToShow[$table] ?? [];
-        if (!empty($enabledColumnsToShow)) {
-            $columns = array_filter($columns, function($col) use ($enabledColumnsToShow) {
-                return in_array($col['name'], $enabledColumnsToShow);
-            });
-            // Reindex array
-            $columns = array_values($columns);
+
+        $enabledColumns = $this->config->enabledColumnsToShow[$table] ?? [];
+
+        if (!empty($enabledColumns)) {
+            $columns = array_values(array_filter($columns, function($c) use ($enabledColumns) {
+                return in_array($c['name'], $enabledColumns);
+            }));
         }
         return $columns;
     }
@@ -77,15 +74,10 @@ class DatabaseReader
      */
     public function getPrimaryKey(string $table): ?string
     {
-        $fields = $this->db->getFieldData($table);
-        
-        foreach ($fields as $field) {
-            if ($field->primary_key) {
-                return $field->name;
-            }
+        foreach ($this->db->getFieldData($table) as $field) {
+            if ($field->primary_key) return $field->name;
         }
-        
-        return 'id'; // fallback to 'id' if no primary key found
+        return 'id';
     }
 
     /**
@@ -95,10 +87,44 @@ class DatabaseReader
      */
     public function getForeignKeys(string $table): array
     {
-        $foreignKeys = [];
-        
-        // This is database-specific, here's MySQL implementation
-        $query = "
+        $driver = strtolower($this->db->DBDriver);
+
+        // ======================================
+        // PostgreSQL version
+        // ======================================
+        if ($driver === 'postgre') {
+            $sql = "
+                SELECT
+                    kcu.column_name AS column_name,
+                    ccu.table_name AS referenced_table,
+                    ccu.column_name AS referenced_column
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                JOIN information_schema.constraint_column_usage ccu
+                    ON ccu.constraint_name = tc.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_name = ?
+            ";
+
+            $result = $this->db->query($sql, [$table]);
+
+            $foreignKeys = [];
+            foreach ($result->getResultArray() as $row) {
+                $foreignKeys[] = [
+                    'column'            => $row['column_name'],
+                    'referenced_table'  => $row['referenced_table'],
+                    'referenced_column' => $row['referenced_column']
+                ];
+            }
+
+            return $foreignKeys;
+        }
+
+        // ======================================
+        // MySQL version (original)
+        // ======================================
+        $sql = "
             SELECT 
                 COLUMN_NAME,
                 REFERENCED_TABLE_NAME,
@@ -111,16 +137,15 @@ class DatabaseReader
                 AND REFERENCED_TABLE_NAME IS NOT NULL
         ";
         
-        $result = $this->db->query($query, [$table]);
+        $result = $this->db->query($sql, [$table]);
         
-        if ($result) {
-            foreach ($result->getResultArray() as $row) {
-                $foreignKeys[] = [
-                    'column' => $row['COLUMN_NAME'],
-                    'referenced_table' => $row['REFERENCED_TABLE_NAME'],
-                    'referenced_column' => $row['REFERENCED_COLUMN_NAME']
-                ];
-            }
+        $foreignKeys = [];
+        foreach ($result->getResultArray() as $row) {
+            $foreignKeys[] = [
+                'column'            => $row['COLUMN_NAME'],
+                'referenced_table'  => $row['REFERENCED_TABLE_NAME'],
+                'referenced_column' => $row['REFERENCED_COLUMN_NAME']
+            ];
         }
         
         return $foreignKeys;
@@ -153,34 +178,68 @@ class DatabaseReader
      */
     public function getTableStats(string $table): array
     {
-        $query = "
+        $driver = strtolower($this->db->DBDriver);
+
+        // ======================================
+        // PostgreSQL version
+        // ======================================
+        if ($driver === 'postgre') {
+
+            // Basic table statistics
+            $sql = "
+                SELECT 
+                    reltuples::bigint AS row_count,
+                    pg_relation_size(relid) AS data_size,
+                    pg_indexes_size(relid) AS index_size,
+                    pg_total_relation_size(relid) AS total_size
+                FROM pg_catalog.pg_statio_user_tables
+                WHERE relname = ?
+            ";
+            $stats = $this->db->query($sql, [$table])->getRowArray();
+
+            if (!$stats) {
+                return [
+                    'row_count'   => 0,
+                    'data_size'   => 0,
+                    'index_size'  => 0,
+                    'total_size'  => 0,
+                    'avg_row_len' => 0,
+                    'created_at'  => null,
+                    'updated_at'  => null,
+                ];
+            }
+
+            // PostgreSQL does NOT track created_at or updated_at for tables
+            return [
+                'row_count'   => (int) $stats['row_count'],
+                'data_size'   => (int) $stats['data_size'],
+                'index_size'  => (int) $stats['index_size'],
+                'total_size'  => (int) $stats['total_size'],
+                'avg_row_len' => $stats['row_count'] > 0 
+                                    ? (int) ($stats['data_size'] / $stats['row_count'])
+                                    : 0,
+                'created_at'  => null,
+                'updated_at'  => null,
+            ];
+        }
+
+        // ======================================
+        // MySQL version (original)
+        // ======================================
+        $sql = "
             SELECT 
-                COUNT(*) as row_count,
-                AVG(DATA_LENGTH) as avg_row_length,
+                TABLE_ROWS as row_count,
+                AVG_ROW_LENGTH as avg_row_len,
                 DATA_LENGTH as data_size,
                 INDEX_LENGTH as index_size,
                 CREATE_TIME as created_at,
                 UPDATE_TIME as updated_at
-            FROM 
-                INFORMATION_SCHEMA.TABLES
-            WHERE 
-                TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME = ?
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = ?
         ";
-        
-        $result = $this->db->query($query, [$table]);
-        
-        if ($result) {
-            $stats = $result->getRowArray();
-            
-            // Get actual row count
-            $countResult = $this->db->query("SELECT COUNT(*) as total FROM `{$table}`");
-            $stats['row_count'] = $countResult->getRow()->total ?? 0;
-            
-            return $stats;
-        }
-        
-        return [];
+
+        return $this->db->query($sql, [$table])->getRowArray();
     }
 
     /**
@@ -200,13 +259,49 @@ class DatabaseReader
      */
     public function getTableIndexes(string $table): array
     {
-        $query = "SHOW INDEX FROM `{$table}`";
-        $result = $this->db->query($query);
-        
-        if (!$result) {
-            return [];
+        $driver = strtolower($this->db->DBDriver);
+
+        // ======================================
+        // PostgreSQL version
+        // ======================================
+        if ($driver === 'postgre') {
+            $sql = "
+                SELECT
+                    i.indexname as name,
+                    ix.indisunique as unique,
+                    am.amname as type,
+                    ARRAY(
+                        SELECT a.attname
+                        FROM pg_attribute a
+                        WHERE a.attrelid = ix.indrelid
+                        AND a.attnum = ANY(ix.indkey)
+                    ) as columns
+                FROM pg_indexes i
+                JOIN pg_class c ON c.relname = i.tablename
+                JOIN pg_index ix ON c.oid = ix.indrelid AND i.indexname = ix.indexname
+                JOIN pg_am am ON am.oid = ix.indam
+                WHERE i.tablename = ?
+            ";
+
+            $indexes = [];
+            foreach ($this->db->query($sql, [$table])->getResultArray() as $row) {
+                $indexes[] = [
+                    'name'    => $row['name'],
+                    'unique'  => ($row['unique'] === true || $row['unique'] === 't'),
+                    'type'    => strtoupper($row['type']),
+                    'columns' => $row['columns'], // already array
+                ];
+            }
+
+            return $indexes;
         }
-        
+
+        // ======================================
+        // MySQL version (original)
+        // ======================================
+        $result = $this->db->query("SHOW INDEX FROM `{$table}`");
+        if (!$result) return [];
+
         $indexes = [];
         foreach ($result->getResultArray() as $row) {
             $keyName = $row['Key_name'];
@@ -222,7 +317,7 @@ class DatabaseReader
             
             $indexes[$keyName]['columns'][] = $row['Column_name'];
         }
-        
+
         return array_values($indexes);
     }
 
@@ -233,21 +328,12 @@ class DatabaseReader
      */
     public function getRequiredFields(string $table): array
     {
-        $columns = $this->getTableColumns($table);
         $required = [];
-        
-        foreach ($columns as $column) {
-            // Skip primary key with auto increment
-            if ($column['primary_key']) {
-                continue;
-            }
-            
-            // If not nullable and no default value, it's required
-            if (!$column['nullable'] && $column['default'] === null) {
+        foreach ($this->getTableColumns($table) as $column) {
+            if (!$column['primary_key'] && !$column['nullable'] && $column['default'] === null) {
                 $required[] = $column['name'];
             }
         }
-        
         return $required;
     }
 
@@ -285,6 +371,9 @@ class DatabaseReader
      * Get validation rules based on column type
      * @param string $table
      * @return array
+     * ====================
+     * VALIDATION RULES (PostgreSQL aware)
+     * ====================
      */
     public function getValidationRules(string $table): array
     {
@@ -307,20 +396,42 @@ class DatabaseReader
             // Type-based rules
             $type = strtolower($column['type']);
             
-            if (strpos($type, 'int') !== false) {
+            // Numeric types
+            if (in_array($type, ['integer', 'int', 'smallint', 'bigint', 'serial', 'bigserial'])) {
                 $fieldRules[] = 'integer';
-            } elseif (strpos($type, 'decimal') !== false || strpos($type, 'float') !== false || strpos($type, 'double') !== false) {
+
+            } elseif (in_array($type, ['real', 'double precision', 'numeric', 'decimal', 'float'])) {
                 $fieldRules[] = 'decimal';
-            } elseif (strpos($type, 'varchar') !== false || strpos($type, 'char') !== false) {
+
+            // Boolean
+            } elseif ($type === 'boolean' || $type === 'bool') {
+                $fieldRules[] = 'in_list[true,false]';
+
+            // Character types
+            } elseif (strpos($type, 'char') !== false || strpos($type, 'varchar') !== false || strpos($type, 'character varying') !== false) {
                 if ($column['max_length']) {
                     $fieldRules[] = "max_length[{$column['max_length']}]";
                 }
-            } elseif (strpos($type, 'text') !== false) {
+
+            // Text
+            } elseif ($type === 'text' || $type === 'json' || $type === 'jsonb') {
                 $fieldRules[] = 'string';
-            } elseif (strpos($type, 'date') !== false || strpos($type, 'time') !== false) {
+
+            // UUID
+            } elseif ($type === 'uuid') {
+                $fieldRules[] = 'valid_uuid';
+
+            // Date/time
+            } elseif (
+                strpos($type, 'date') !== false ||
+                strpos($type, 'time') !== false ||
+                strpos($type, 'timestamp') !== false
+            ) {
                 $fieldRules[] = 'valid_date';
-            } elseif (strpos($type, 'email') !== false) {
-                $fieldRules[] = 'valid_email';
+
+            // Binary
+            } elseif ($type === 'bytea') {
+                $fieldRules[] = 'string';
             }
             
             if (!empty($fieldRules)) {
