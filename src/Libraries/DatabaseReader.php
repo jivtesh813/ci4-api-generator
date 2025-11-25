@@ -3,16 +3,29 @@
 namespace JivteshGhatora\Ci4ApiGenerator\Libraries;
 
 use Config\Database;
+use Config\DatabaseReader as ReaderConfig;
 
 class DatabaseReader
 {
     protected $db;
     protected $config;
+    protected string $driver;
+    protected string $schema;
 
     public function __construct()
     {
         $this->db = Database::connect();
         $this->config = config('ApiGenerator');
+
+        $readerCfg = config('DatabaseReader');
+
+        // Auto detect driver
+        $this->driver = $readerCfg->driver === 'auto'
+            ? strtolower($this->db->DBDriver)
+            : strtolower($readerCfg->driver);
+
+        // PostgreSQL schema
+        $this->schema = $readerCfg->pgsqlSchema ?? 'public';
     }
     
     /**
@@ -41,7 +54,6 @@ class DatabaseReader
     public function getTableColumns(string $table): array
     {
         $fields = $this->db->getFieldData($table);
-        
         $columns = [];
         
         foreach ($fields as $field) {
@@ -49,7 +61,7 @@ class DatabaseReader
             // For some drivers, you may need to check extra info or parse type string
             $columns[] = [
                 'name' => $field->name,
-                'type' => $field->type,
+                'type' => $this->normalizeType($field->type),
                 'max_length' => $field->max_length,
                 'primary_key' => $field->primary_key,
                 'nullable' => $field->nullable,
@@ -57,6 +69,7 @@ class DatabaseReader
             ];
         }
 
+        // Config filter
         $enabledColumns = $this->config->enabledColumnsToShow[$table] ?? [];
 
         if (!empty($enabledColumns)) {
@@ -92,7 +105,7 @@ class DatabaseReader
         // ======================================
         // PostgreSQL version
         // ======================================
-        if ($driver === 'postgre') {
+        if ($driver === 'postgre' || $this->driver === 'pgsql') {
             $sql = "
                 SELECT
                     kcu.column_name AS column_name,
@@ -105,50 +118,74 @@ class DatabaseReader
                     ON ccu.constraint_name = tc.constraint_name
                 WHERE tc.constraint_type = 'FOREIGN KEY'
                 AND tc.table_name = ?
+                AND tc.table_schema = ?
             ";
-
-            $result = $this->db->query($sql, [$table]);
-
-            $foreignKeys = [];
-            foreach ($result->getResultArray() as $row) {
-                $foreignKeys[] = [
-                    'column'            => $row['column_name'],
-                    'referenced_table'  => $row['referenced_table'],
-                    'referenced_column' => $row['referenced_column']
-                ];
-            }
-
-            return $foreignKeys;
-        }
+            $result = $this->db->query($sql, [$table, $this->schema]);
 
         // ======================================
         // MySQL version (original)
         // ======================================
-        $sql = "
-            SELECT 
-                COLUMN_NAME,
-                REFERENCED_TABLE_NAME,
-                REFERENCED_COLUMN_NAME
-            FROM 
-                INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-            WHERE 
-                TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME = ?
-                AND REFERENCED_TABLE_NAME IS NOT NULL
-        ";
-        
-        $result = $this->db->query($sql, [$table]);
-        
-        $foreignKeys = [];
-        foreach ($result->getResultArray() as $row) {
-            $foreignKeys[] = [
-                'column'            => $row['COLUMN_NAME'],
-                'referenced_table'  => $row['REFERENCED_TABLE_NAME'],
-                'referenced_column' => $row['REFERENCED_COLUMN_NAME']
-            ];
+        }else{
+            $sql = "
+                SELECT 
+                    COLUMN_NAME,
+                    REFERENCED_TABLE_NAME,
+                    REFERENCED_COLUMN_NAME
+                FROM 
+                    INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                WHERE 
+                    TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = ?
+                    AND REFERENCED_TABLE_NAME IS NOT NULL
+            ";
+            $result = $this->db->query($query, [$table]);   
         }
         
+        $foreignKeys = [];
+
+        if ($result) {
+            foreach ($result->getResultArray() as $row) {
+                $foreignKeys[] = [
+                    'column'            => $row['column_name'] ?? $row['COLUMN_NAME'],
+                    'referenced_table'  => $row['referenced_table_name'] ?? $row['REFERENCED_TABLE_NAME'],
+                    'referenced_column' => $row['referenced_column_name'] ?? $row['REFERENCED_COLUMN_NAME']
+                ];
+            }
+        }
+
         return $foreignKeys;
+    }
+
+    /** ------------------------------------------------------------
+     * TYPE DETECTION (MySQL + PostgreSQL)
+     * ------------------------------------------------------------ */
+    private function normalizeType(string $type): string
+    {
+        $t = strtolower($type);
+
+        // PostgreSQL mappings
+        $pgsqlMap = [
+            'integer'   => 'int',
+            'smallint'  => 'int',
+            'bigint'    => 'int',
+            'serial'    => 'int',
+            'bigserial' => 'int',
+            'numeric'   => 'decimal',
+            'timestamp' => 'datetime',
+            'timestamptz' => 'datetime',
+            'bool'      => 'boolean',
+        ];
+
+        if ($this->driver === 'pgsql') {
+            foreach ($pgsqlMap as $pgType => $mapped) {
+                if (str_contains($t, $pgType)) {
+                    return $mapped;
+                }
+            }
+        }
+
+        // MySQL fallback
+        return $t;
     }
 
     /**
